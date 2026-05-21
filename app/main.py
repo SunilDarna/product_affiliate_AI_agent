@@ -10,6 +10,7 @@ from app.video.editor import strip_audio
 from app.llm.script_generator import generate_scripts
 from app.video.tts import create_voiceover
 from app.video.composer import compose_final_video
+from app.video.thumbnail import add_ai_thumbnail_first_frame
 from app.publish.link_generator import generate_affiliate_link
 from app.publish.seo_generator import generate_seo_metadata
 from app.publish.uploader import upload_to_youtube, upload_to_instagram
@@ -106,9 +107,16 @@ def run_pipeline():
     if not final_video:
         print("Video rendering failed.")
         return
+
+    final_video = add_ai_thumbnail_first_frame(
+        final_video,
+        product=best_product,
+        script_text=selected_script['full_text'],
+        trends=trends
+    )
         
     # Phase 6: Publishing & Links
-    print("\n[7/7] Generating Links and Publishing...")
+    print("\n[7/8] Generating Links and Publishing...")
     try:
         affiliate_link = generate_affiliate_link(best_product['url'], require_shortlink=True)
     except Exception as e:

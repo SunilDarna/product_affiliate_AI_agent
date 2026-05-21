@@ -10,6 +10,7 @@ Mirrors ShortsAutomatorAIAgent/youtube_uploader.py:
 """
 import os
 import re
+from datetime import datetime, timedelta, timezone
 import google.auth.transport.requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -24,6 +25,8 @@ from app.config import (
 
 
 URL_RE = re.compile(r"https?://[^\s]+")
+SHORTS_SCHEDULE_GAP_HOURS = 4
+IMMEDIATE_PUBLISH_GRACE_MINUTES = 10
 
 
 def _get_authenticated_youtube():
@@ -43,7 +46,135 @@ def _get_authenticated_youtube():
     return build("youtube", "v3", credentials=creds)
 
 
-def upload_to_youtube(video_path, metadata, srt_path=None, publish_at=None):
+def _parse_youtube_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_iso8601_duration_seconds(duration):
+    if not duration:
+        return 0
+    match = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration)
+    if not match:
+        return 0
+    days, hours, minutes, seconds = [int(part or 0) for part in match.groups()]
+    return (((days * 24) + hours) * 60 + minutes) * 60 + seconds
+
+
+def _to_youtube_rfc3339(dt):
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _get_authenticated_channel_uploads_playlist(youtube):
+    try:
+        response = youtube.channels().list(
+            part="contentDetails",
+            mine=True,
+            maxResults=1,
+        ).execute()
+        items = response.get("items", [])
+        if not items:
+            print("Could not find authenticated YouTube channel uploads playlist.")
+            return None
+        return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    except Exception as exc:
+        print(f"Could not fetch authenticated channel uploads playlist: {exc}")
+        return None
+
+
+def _list_recent_upload_video_ids(youtube, uploads_playlist_id, max_items=50):
+    video_ids = []
+    page_token = None
+    while len(video_ids) < max_items:
+        response = youtube.playlistItems().list(
+            part="contentDetails",
+            playlistId=uploads_playlist_id,
+            maxResults=min(50, max_items - len(video_ids)),
+            pageToken=page_token,
+        ).execute()
+        for item in response.get("items", []):
+            video_id = item.get("contentDetails", {}).get("videoId")
+            if video_id:
+                video_ids.append(video_id)
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return video_ids
+
+
+def _fetch_videos(youtube, video_ids):
+    videos = []
+    for index in range(0, len(video_ids), 50):
+        batch = video_ids[index:index + 50]
+        if not batch:
+            continue
+        response = youtube.videos().list(
+            part="snippet,status,contentDetails",
+            id=",".join(batch),
+            maxResults=50,
+        ).execute()
+        videos.extend(response.get("items", []))
+    return videos
+
+
+def _video_slot_time(video):
+    status = video.get("status", {})
+    snippet = video.get("snippet", {})
+    scheduled = _parse_youtube_datetime(status.get("publishAt"))
+    published = _parse_youtube_datetime(snippet.get("publishedAt"))
+    return scheduled or published
+
+
+def _compute_next_shorts_publish_at(youtube, gap_hours=SHORTS_SCHEDULE_GAP_HOURS):
+    """
+    Returns None when the next slot is immediate/public, otherwise an RFC3339 UTC
+    timestamp for YouTube scheduled publishing.
+    """
+    uploads_playlist_id = _get_authenticated_channel_uploads_playlist(youtube)
+    if not uploads_playlist_id:
+        print("Scheduling fallback: could not inspect uploads playlist, publishing immediately.")
+        return None
+
+    video_ids = _list_recent_upload_video_ids(youtube, uploads_playlist_id, max_items=50)
+    if not video_ids:
+        print("No previous uploads found. Publishing immediately.")
+        return None
+
+    latest_shorts_slot = None
+    for video in _fetch_videos(youtube, video_ids):
+        duration_seconds = _parse_iso8601_duration_seconds(video.get("contentDetails", {}).get("duration"))
+        if duration_seconds <= 0 or duration_seconds > 60:
+            continue
+        slot_time = _video_slot_time(video)
+        if slot_time and (latest_shorts_slot is None or slot_time > latest_shorts_slot):
+            latest_shorts_slot = slot_time
+
+    if not latest_shorts_slot:
+        print("No previous Shorts detected in recent uploads. Publishing immediately.")
+        return None
+
+    now = datetime.now(timezone.utc)
+    next_slot = latest_shorts_slot + timedelta(hours=gap_hours)
+    if next_slot <= now + timedelta(minutes=IMMEDIATE_PUBLISH_GRACE_MINUTES):
+        print(
+            "Latest Short slot is older than the 4-hour gap. "
+            f"Last slot: {_to_youtube_rfc3339(latest_shorts_slot)}. Publishing immediately."
+        )
+        return None
+
+    scheduled = _to_youtube_rfc3339(next_slot)
+    print(
+        "Next Shorts schedule slot selected: "
+        f"{scheduled} UTC (4 hours after latest Short/scheduled slot)."
+    )
+    return scheduled
+
+
+def upload_to_youtube(video_path, metadata, srt_path=None, publish_at="auto"):
     """
     Uploads a video to YouTube as a Short.
 
@@ -60,6 +191,9 @@ def upload_to_youtube(video_path, metadata, srt_path=None, publish_at=None):
     youtube = _get_authenticated_youtube()
     if not youtube:
         return None
+
+    if publish_at == "auto":
+        publish_at = _compute_next_shorts_publish_at(youtube)
 
     # Inject #Shorts into title & description — required for Shorts algorithm
     title = metadata.get('title', 'Trending Product Alert!')
@@ -97,7 +231,7 @@ def upload_to_youtube(video_path, metadata, srt_path=None, publish_at=None):
             "defaultLanguage": "en",
         },
         "status": {
-            "privacyStatus": "private",   # Safe default — review before making public
+            "privacyStatus": "private" if publish_at else "public",
             "selfDeclaredMadeForKids": False,
         },
         # India geo-tag — boosts discoverability for Indian audience
@@ -111,6 +245,8 @@ def upload_to_youtube(video_path, metadata, srt_path=None, publish_at=None):
     if publish_at:
         body["status"]["publishAt"] = publish_at
         print(f"Scheduled publish at: {publish_at} (UTC)")
+    else:
+        print("Publishing immediately as public: no later 4-hour Shorts slot is needed.")
 
     try:
         media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
@@ -132,7 +268,7 @@ def upload_to_youtube(video_path, metadata, srt_path=None, publish_at=None):
         print(f"YouTube Shorts Upload Complete! Video ID: {video_id}")
 
         # Upload SRT captions for SEO auto-indexing — mirrors ShortsAutomatorAIAgent
-        if srt_path and os.path.exists(srt_path):
+        if srt_path and os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
             print("Uploading SRT captions for SEO indexing...")
             try:
                 caption_body = {
@@ -152,6 +288,8 @@ def upload_to_youtube(video_path, metadata, srt_path=None, publish_at=None):
                 print("SRT captions uploaded successfully.")
             except Exception as e:
                 print(f"SRT upload warning (video is still live): {e}")
+        elif srt_path:
+            print("SRT captions skipped: subtitle file is missing or empty.")
 
         return f"https://youtube.com/shorts/{video_id}"
 
