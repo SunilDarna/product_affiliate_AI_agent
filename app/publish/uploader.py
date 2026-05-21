@@ -10,6 +10,7 @@ Mirrors ShortsAutomatorAIAgent/youtube_uploader.py:
 """
 import os
 import re
+import json
 from datetime import datetime, timedelta, timezone
 import google.auth.transport.requests
 from google.oauth2.credentials import Credentials
@@ -67,6 +68,16 @@ def _parse_iso8601_duration_seconds(duration):
 
 def _to_youtube_rfc3339(dt):
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _save_upload_manifest(data):
+    try:
+        path = os.path.join(WORKSPACE_DIR, "youtube_upload_manifest.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        print(f"Saved YouTube upload manifest: {path}")
+    except Exception as exc:
+        print(f"Could not save YouTube upload manifest: {exc}")
 
 
 def _get_authenticated_channel_uploads_playlist(youtube):
@@ -266,6 +277,15 @@ def upload_to_youtube(video_path, metadata, srt_path=None, publish_at="auto"):
 
         video_id = response['id']
         print(f"YouTube Shorts Upload Complete! Video ID: {video_id}")
+        _save_upload_manifest({
+            "video_id": video_id,
+            "shorts_url": f"https://youtube.com/shorts/{video_id}",
+            "video_path": video_path,
+            "title": title,
+            "privacy_status": body["status"]["privacyStatus"],
+            "publish_at": publish_at,
+            "affiliate_link": affiliate_link,
+        })
 
         # Upload SRT captions for SEO auto-indexing — mirrors ShortsAutomatorAIAgent
         if srt_path and os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:

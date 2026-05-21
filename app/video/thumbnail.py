@@ -19,9 +19,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+from google import genai
+from google.genai import types
 from playwright.async_api import async_playwright
 
-from app.config import WORKSPACE_DIR
+from app.config import GEMINI_API_KEY, WORKSPACE_DIR
 from app.video.composer import _get_ffmpeg_bin, get_media_duration
 
 
@@ -237,6 +239,95 @@ Thumbnail requirements:
 
 Generate one final thumbnail image only.
 """.strip()
+
+
+def _mime_type(path: str) -> str:
+    ext = os.path.splitext(path.lower())[1]
+    if ext in [".jpg", ".jpeg"]:
+        return "image/jpeg"
+    if ext == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def _image_part(path: str) -> types.Part:
+    with open(path, "rb") as f:
+        return types.Part.from_bytes(data=f.read(), mime_type=_mime_type(path))
+
+
+def validate_thumbnail_matches_product(product: Dict[str, Any], thumbnail_path: str, frame_paths: List[str]) -> bool:
+    """
+    Uses Gemini vision as a semantic guardrail: the generated thumbnail must
+    match the product/category in the title and uploaded reference frames.
+    """
+    if not GEMINI_API_KEY:
+        print("Thumbnail validation skipped: Gemini API key missing.")
+        return False
+    if not thumbnail_path or not os.path.exists(thumbnail_path):
+        return False
+
+    title = product.get("title", "Featured product")
+    prompt = f"""
+You are validating an AI-generated YouTube Shorts thumbnail before upload.
+
+Product title:
+{title}
+
+Images:
+1. The generated thumbnail.
+2+. Reference frames from the actual product video.
+
+Return ONLY valid JSON:
+{{
+  "valid": true or false,
+  "confidence": 0.0 to 1.0,
+  "generated_product_category": "short category",
+  "reference_product_category": "short category",
+  "issues": ["short issue strings"]
+}}
+
+Validation rule:
+- valid must be true only if the generated thumbnail clearly shows the same product category as the reference frames and product title.
+- Reject if it reused an unrelated product, wrong category, wrong marketplace logo, fake brand, or visual details that would confuse viewers.
+- Exact text style does not matter. Exact brand rendering can be stylized, but product category must be unmistakably correct.
+""".strip()
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        contents: List[Any] = [prompt, _image_part(thumbnail_path)]
+        for frame in frame_paths[:2]:
+            if os.path.exists(frame):
+                contents.append(_image_part(frame))
+
+        response = client.models.generate_content(
+            model="gemini-flash-latest",
+            contents=contents,
+            config=types.GenerateContentConfig(temperature=0.0),
+        )
+        raw = (response.text or "").strip()
+        raw = re.sub(r"```json|```", "", raw).strip()
+        result = json.loads(raw)
+        _save_json("thumbnail_validation.json", {
+            "product_title": title,
+            "thumbnail_path": thumbnail_path,
+            "frame_paths": frame_paths[:2],
+            "result": result,
+        })
+        valid = bool(result.get("valid")) and float(result.get("confidence", 0.0)) >= 0.65
+        if valid:
+            print(f"Thumbnail validation passed: {result}")
+        else:
+            print(f"Thumbnail validation rejected generated image: {result}")
+        return valid
+    except Exception as exc:
+        _save_json("thumbnail_validation.json", {
+            "product_title": title,
+            "thumbnail_path": thumbnail_path,
+            "frame_paths": frame_paths[:2],
+            "error": str(exc),
+        })
+        print(f"Thumbnail validation failed: {exc}")
+        return False
 
 
 def _download_generated_image_from_gemini(output_path: str, baseline_images: Optional[List[str]] = None) -> bool:
@@ -698,16 +789,26 @@ def prepend_thumbnail_to_video(video_path: str, thumbnail_path: str, output_file
     return output_path
 
 
-def add_ai_thumbnail_first_frame(video_path: str, product: Dict[str, Any], script_text: str, trends: List[str]) -> str:
+def add_ai_thumbnail_first_frame(video_path: str, product: Dict[str, Any], script_text: str, trends: List[str], strict: bool = False) -> str:
     """
     Best-effort thumbnail enhancement. If Gemini generation fails, the original video
     is returned so the monetized pipeline can continue.
     """
     print("\n[6/8] Generating viral thumbnail first frame via Gemini/Kimi...")
     frames = extract_thumbnail_frames(video_path, count=2)
-    thumbnail_path = generate_thumbnail_with_gemini(product, script_text, trends, frames)
+    thumbnail_path = None
+    for attempt in range(1, 3):
+        print(f"Thumbnail generation attempt {attempt}/2...")
+        candidate_path = generate_thumbnail_with_gemini(product, script_text, trends, frames)
+        if candidate_path and validate_thumbnail_matches_product(product, candidate_path, frames):
+            thumbnail_path = candidate_path
+            break
+        print("Generated thumbnail did not pass product-match validation.")
+
     if not thumbnail_path:
-        print("Thumbnail generation skipped/failed. Continuing with original final video.")
+        print("Thumbnail generation failed validation. Continuing with original final video.")
+        if strict:
+            raise RuntimeError("Thumbnail generation failed product-match validation")
         return video_path
 
     enhanced_video = prepend_thumbnail_to_video(video_path, thumbnail_path)

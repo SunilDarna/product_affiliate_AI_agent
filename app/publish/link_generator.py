@@ -89,6 +89,11 @@ def _is_shortlink(url: str) -> bool:
     return bool(url and AMAZON_SHORT_LINK_RE.match(url.strip()))
 
 
+def validate_amazon_shortlink(url: str) -> bool:
+    """Public guard used by the pipeline before upload."""
+    return _is_shortlink(url)
+
+
 def _save_diagnostic(name: str, data: Any) -> None:
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
@@ -454,7 +459,10 @@ async def _get_amazon_affiliate_link_result(product_url: str, require_shortlink:
 
 def generate_affiliate_link(product_url: str, require_shortlink: bool = True) -> str:
     """Synchronous wrapper for generating an Amazon SiteStripe short link."""
-    return asyncio.run(_get_amazon_affiliate_link_result(product_url, require_shortlink=require_shortlink)).url
+    link = asyncio.run(_get_amazon_affiliate_link_result(product_url, require_shortlink=require_shortlink)).url
+    if require_shortlink and not validate_amazon_shortlink(link):
+        raise RuntimeError(f"Generated affiliate link is not an Amazon short link: {link}")
+    return link
 
 
 if __name__ == "__main__":
