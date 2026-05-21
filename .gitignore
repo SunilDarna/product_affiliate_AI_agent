@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+
+# Credentials and OAuth tokens
+secrets.json
+secrets.json.bak
+token*.json
+client_secret*.json
+
+# Generated media, diagnostics, and local state
+workspace/
+amazon_debug.html
+*.log

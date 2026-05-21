@@ -1,0 +1,36 @@
+i have docker desktop and i have pulled qwen3.6 locally,
+
+you run as a service in docker desktop and generate endpoint for LLM for my project
+
+enable internet access to the llm, so that llm can access internet and retrive live data
+
+i have youtube channel, intagramm channel
+
+our project will do below:
+
+identify trending products list from all the internet sources, for demand in india on real time,
+
+go to flipkart, amazon, meesho, myntra and check the product, get the commision rate of that product category, select high return % product list,
+then go to youtbe and check similar product advertize from product official youtube channel and select clip under 58 seconds, remove audio, and generate voiceover using llm with adaptive content, based on trend on real time. to match the clip.
+
+generate script using llm, based on product, with hook, content, create 4-5 variant of script, with hook and engaging story telling of the product 
+
+we are going to use exact same clip from the original video suggested by LLM,
+
+we remove the original audio, and generate voiceover using llm with adaptive content, based on trend on real time. to match the clip.
+
+for voiceover we use saravam for indian language translation and Elevenlabs AI or any other LLM voice generator service,  we generate voiceover using llm with adaptive content, based on trend on real time. to match the clip.
+must focus on free service as much as possible
+
+if free service is not avaiable, we create our own services using llm from scratch and utilising the docker desktop.
+
+now edit the clip to add the generated voiceover, must match the timing, and also can add sub title using llm with adaptive content, based on trend on real time. to match the clip.
+
+upload to youtube channel, and instagram channel with proper title and description and hashtags, using llm with adaptive content, with CEO 2.0  based on trend on real time. to match the clip.
+
+/Users/sunildarna/Documents/AI-income-generator/product_affiliate_AI_agent use this for main project 
+
+/Users/sunildarna/Documents/AI-income-generator/ShortsAutomatorAIAgent take this as a referance and recreate everything required for this project in this /Users/sunildarna/Documents/AI-income-generator/product_affiliate_AI_agent
+
+for each product video generate an  affiliate link dynamically from amazon website already logged in with my credentials and post in video description and title. 
+
